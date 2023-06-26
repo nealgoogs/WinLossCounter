@@ -1,10 +1,17 @@
 import requests
+import datetime
+import pytz
 import tkinter as tk
-
+from tkinter import ttk
 
 from constants import SUMMMONER_BY_NAME_URL, MATCH_HISTORY_URL, MATCH_DETAILS_URL
 
-def get_last_10_games_stats():
+summoner_entry = None
+result_label = None
+
+def get_stats_per_day():
+    global summoner_entry, result_label
+
     summoner_name = summoner_entry.get()
     response = requests.get(SUMMMONER_BY_NAME_URL.format(summoner_name))
 
@@ -12,19 +19,31 @@ def get_last_10_games_stats():
         summoner_data = response.json()
         puuid = summoner_data["puuid"]
 
-        match_history_response = requests.get(MATCH_HISTORY_URL.format(puuid))
+        # Get the current date in the desired timezone (EST)
+        est_timezone = pytz.timezone("US/Eastern")
+        now = datetime.datetime.now(est_timezone)
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Calculate the start time for the previous day
+        start_time = midnight - datetime.timedelta(days=1)
+
+        # Convert the start and end times to UTC
+        start_time_utc = start_time.astimezone(pytz.utc)
+        midnight_utc = midnight.astimezone(pytz.utc)
+
+        # Format the start and end times to match the API requirements
+        formatted_start_time = start_time_utc.strftime("%Y-%m-%dT%H:%M:%S")
+        formatted_midnight = midnight_utc.strftime("%Y-%m-%dT%H:%M:%S")
+
+        match_history_response = requests.get(MATCH_HISTORY_URL.format(puuid, formatted_start_time, formatted_midnight))
 
         if match_history_response.status_code == 200:
             match_history_data = match_history_response.json()
 
             if len(match_history_data) > 0:
-                matches = match_history_data[:10]  # Retrieve the last 10 matches
+                matches = match_history_data
 
-                wins = 0
-                losses = 0
-                total_kills = 0
-                total_deaths = 0
-                total_assists = 0
+                stats_per_day = {}  # Dictionary to store stats per day
 
                 for match_id in matches:
                     match_details_response = requests.get(MATCH_DETAILS_URL.format(match_id))
@@ -41,54 +60,83 @@ def get_last_10_games_stats():
                             deaths = participant["deaths"]
                             assists = participant["assists"]
 
+                            # Get the date of the match
+                            timestamp = match_details_data["info"]["gameCreation"] / 1000
+                            match_date = datetime.datetime.fromtimestamp(timestamp, tz=est_timezone).date()
+
+                            # Add the stats to the corresponding date in the dictionary
+                            if match_date not in stats_per_day:
+                                stats_per_day[match_date] = {
+                                    "wins": 0,
+                                    "losses": 0,
+                                    "total_kills": 0,
+                                    "total_deaths": 0,
+                                    "total_assists": 0
+                                }
+
+                            stats_per_day[match_date]["total_kills"] += kills
+                            stats_per_day[match_date]["total_deaths"] += deaths
+                            stats_per_day[match_date]["total_assists"] += assists
+
                             if win:
-                                wins += 1
+                                stats_per_day[match_date]["wins"] += 1
                             else:
-                                losses += 1
+                                stats_per_day[match_date]["losses"] += 1
 
-                            total_kills += kills
-                            total_deaths += deaths
-                            total_assists += assists
+                # Calculate KDA ratio for each day
+                for date, stats in stats_per_day.items():
+                    total_kills = stats["total_kills"]
+                    total_deaths = stats["total_deaths"]
+                    total_assists = stats["total_assists"]
 
+                    if total_deaths == 0:
+                        kda_ratio = (total_kills + total_assists) / 1
+                    else:
+                        kda_ratio = (total_kills + total_assists) / total_deaths
 
+                    stats["kda_ratio"] = kda_ratio
 
-                if total_deaths == 0:
-                    kda_ratio = (total_kills + total_assists) / 1
-                else:
-                    kda_ratio = (total_kills + total_assists) / total_deaths
+                # Prepare the result text
+                result_text = ""
+                for date, stats in sorted(stats_per_day.items()):
+                    result_text += f"Date: {date}\n"
+                    result_text += f"Wins: {stats['wins']}\n"
+                    result_text += f"Losses: {stats['losses']}\n"
+                    result_text += f"KDA Ratio: {stats['kda_ratio']:.2f}\n\n"
 
-                result_label.config(text=f"Wins: {wins}\nLosses: {losses}\n"
-                                         f"KDA Ratio in the last 10 games: {kda_ratio:.2f}")
-                
-
-
+                result_label.config(text=result_text)
             else:
-                result_label.config(text="No match history found for the summoner.")
+                result_label.config(text="No matches found.")
         else:
             result_label.config(text="Error fetching match history")
     else:
         result_label.config(text="Error fetching summoner details")
 
-# Create the main window
-window = tk.Tk()
-window.title("Last 10 Games Stats")
-window.geometry("500x300")
-window.configure(bg="lightgray") 
+def main():
+    global summoner_entry, result_label
 
-# Create a label and an entry for summoner name input
-summoner_label = tk.Label(window, text="Summoner Name:", font=("Arial", 14), bg="lightgray")
-summoner_label.pack(pady=10)
+    # Create the main window
+    window = tk.Tk()
+    window.title("Stats Per Day")
+    window.geometry("400x300")
 
-summoner_entry = tk.Entry(window, width=30, font=("Arial", 12))
-summoner_entry.pack()
+    # Create a label and an entry for summoner name input
+    summoner_label = ttk.Label(window, text="Summoner Name:")
+    summoner_label.pack(pady=10)
 
-# Create a button to fetch the last 10 games stats
-fetch_button = tk.Button(window, text="Get Stats", command=get_last_10_games_stats, font=("Arial", 12), bg="blue", fg="white")
-fetch_button.pack(pady=10)
+    summoner_entry = ttk.Entry(window, width=50)
+    summoner_entry.pack()
 
-# Create a label to display the result
-result_label = tk.Label(window, text="", font=("Arial", 14), bg="lightgray")
-result_label.pack(pady=10)
+    # Create a button to fetch the stats per day
+    fetch_button = ttk.Button(window, text="Get Stats Per Day", command=get_stats_per_day)
+    fetch_button.pack(pady=10)
 
-# Run the main event loop
-window.mainloop()
+    # Create a label to display the result
+    result_label = ttk.Label(window, text="", anchor="center")
+    result_label.pack(pady=10, fill=tk.BOTH, expand=True)
+
+    # Run the main event loop
+    window.mainloop()
+
+if __name__ == "__main__":
+    main()
